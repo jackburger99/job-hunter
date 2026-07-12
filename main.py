@@ -1,6 +1,9 @@
 """
-Job Hunter v9 — email alerts, Adzuna API, expanded sources
-==========================================================
+Job Hunter v11 — API job sources (Remotive, RemoteOK, Muse, Jooble)
+===================================================================
+New: four API-based sources. Remotive, RemoteOK, and The Muse need NO
+keys and work immediately. Jooble needs a free JOOBLE_API_KEY secret
+(jooble.org/api/about); skipped if absent, like Adzuna.
 Changes from v8:
 - Writes docs/email_body.html (NEW postings only) and .new_count for the
   GitHub Actions email step.
@@ -592,6 +595,117 @@ def fetch_adzuna():
     return jobs, f"OK ({len(jobs)} API results)"
 
 
+
+def _http_json(url, data=None, headers=None):
+    req = urllib.request.Request(url, headers=headers or
+                                 {"User-Agent": "Mozilla/5.0"})
+    if data is not None:
+        req.data = json.dumps(data).encode()
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+
+
+def fetch_remotive():
+    jobs = []
+    try:
+        data = _http_json(
+            "https://remotive.com/api/remote-jobs?category=sales")
+    except Exception as e:
+        return jobs, f"FAILED: {e}"
+    for res in data.get("jobs", []):
+        loc = (res.get("candidate_required_location") or "").lower()
+        if loc and not any(x in loc for x in
+                           ("usa", "united states", "worldwide", "americas",
+                            "north america", "anywhere")):
+            continue
+        title = clean_title(res.get("title", ""))
+        desc = re.sub(r"<[^>]+>", " ", res.get("description", ""))[:1500]
+        j = make_job(title, f"{title} Remote {res.get('salary','')} {desc}",
+                     res.get("url", ""))
+        j["city"], j["commute_min"] = "Remote", 0
+        jobs.append(j)
+    return jobs, f"OK ({len(jobs)} API results)"
+
+
+def fetch_remoteok():
+    jobs = []
+    try:
+        data = _http_json("https://remoteok.com/api")
+    except Exception as e:
+        return jobs, f"FAILED: {e}"
+    for res in data:
+        if not isinstance(res, dict) or not res.get("position"):
+            continue
+        blob = " ".join(res.get("tags", [])) + " " + res.get("position", "")
+        if not any(k in blob.lower() for k in ROLE_KEYWORDS):
+            continue
+        title = clean_title(res.get("position", ""))
+        desc = re.sub(r"<[^>]+>", " ", res.get("description", ""))[:1500]
+        j = make_job(title, f"{title} Remote {desc}",
+                     res.get("url", ""))
+        j["city"], j["commute_min"] = "Remote", 0
+        smax = res.get("salary_max") or res.get("salary_min")
+        if smax:
+            j["salary"] = int(smax)
+        jobs.append(j)
+    return jobs, f"OK ({len(jobs)} API results)"
+
+
+def fetch_themuse():
+    jobs = []
+    locs = ["New York, NY", "Flexible / Remote"]
+    try:
+        for loc in locs:
+            for pg in (1, 2):
+                url = ("https://www.themuse.com/api/public/jobs"
+                       f"?category=Sales&page={pg}&location="
+                       + urllib.parse.quote(loc))
+                data = _http_json(url)
+                for res in data.get("results", []):
+                    title = clean_title(res.get("name", ""))
+                    desc = re.sub(r"<[^>]+>", " ",
+                                  res.get("contents", ""))[:1500]
+                    where = "; ".join(l.get("name", "") for l in
+                                      res.get("locations", []))
+                    link = (res.get("refs", {}) or {}).get(
+                        "landing_page", "")
+                    jobs.append(make_job(
+                        title, f"{title} {where} {desc}", link))
+    except Exception as e:
+        return jobs, f"PARTIAL: {e}"
+    return jobs, f"OK ({len(jobs)} API results)"
+
+
+def fetch_jooble():
+    key = os.environ.get("JOOBLE_API_KEY", "")
+    if not key:
+        return [], "SKIPPED (no JOOBLE_API_KEY set)"
+    jobs = []
+    try:
+        for what in ("sales manager", "business development",
+                     "account executive"):
+            data = _http_json(
+                "https://jooble.org/api/" + key,
+                data={"keywords": what, "location": "Edison, NJ",
+                      "salary": "130000", "page": "1"})
+            for res in data.get("jobs", []):
+                title = clean_title(res.get("title", ""))
+                snippet = re.sub(r"<[^>]+>", " ",
+                                 res.get("snippet", ""))[:1200]
+                ctx = (f"{title} {res.get('location','')} "
+                       f"{res.get('salary','')} {snippet}")
+                jobs.append(make_job(title, ctx, res.get("link", "")))
+    except Exception as e:
+        return jobs, f"PARTIAL: {e}"
+    return jobs, f"OK ({len(jobs)} API results)"
+
+
+API_SOURCES = [("adzuna", fetch_adzuna), ("remotive", fetch_remotive),
+               ("remoteok", fetch_remoteok), ("themuse", fetch_themuse),
+               ("jooble", fetch_jooble)]
+
+
 def passes(j):
     if j["commute_min"] is not None and j["commute_min"] > MAX_COMMUTE_MIN:
         return False
@@ -722,12 +836,14 @@ def main():
             log.append(f"[{site['name']}] {status}")
             all_jobs.extend(jobs)
 
-        az_jobs, az_status = fetch_adzuna()
-        for j in az_jobs:
-            j["board"] = "adzuna"
-            j["enriched"] = "yes"   # API already gives salary + description
-        log.append(f"[adzuna] {az_status}")
-        all_jobs.extend(az_jobs)
+        for api_name, fetcher in API_SOURCES:
+            print(f"[{api_name}] querying API ...")
+            api_jobs, api_status = fetcher()
+            for j in api_jobs:
+                j["board"] = api_name
+                j["enriched"] = "yes"  # APIs already include descriptions
+            log.append(f"[{api_name}] {api_status}")
+            all_jobs.extend(api_jobs)
 
         candidates = dedupe([j for j in all_jobs if passes(j)])
         order = sorted(candidates,
