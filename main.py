@@ -159,8 +159,6 @@ SITES = [
      "urls": ["https://macherusa.com/all"], "extra_wait": 4000},
     {"name": "yiddishjobs", "kind": "urls",
      "urls": ["https://yiddishjobs.com/"], "extra_wait": 5000},
-    {"name": "parnassa", "kind": "urls",
-     "urls": ["https://parnassaexchange.com/"], "extra_wait": 4000},
     {"name": "joelpaul", "kind": "urls",
      "urls": ["https://www.joelpaul.com/jobs/"], "extra_wait": 4000},
     {"name": "jpro", "kind": "search",
@@ -347,12 +345,28 @@ def strip_widget_lines(text):
 
 
 def safe_goto(page, url, wait):
-    try:
-        page.goto(url, timeout=30000, wait_until="domcontentloaded")
-    except Exception as e:
-        if "Download is starting" not in str(e):
-            raise
+    for attempt in (1, 2):
+        try:
+            page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            break
+        except Exception as e:
+            if "Download is starting" in str(e):
+                break
+            if attempt == 2:
+                raise
+            page.wait_for_timeout(3000)   # brief pause, then retry once
     page.wait_for_timeout(wait)
+
+
+def extract_with_retry(page, base_url):
+    """Retry once if the page navigates mid-extraction (jobsgemach bug)."""
+    try:
+        return extract_jobs_from_page(page, base_url)
+    except Exception as e:
+        if "Execution context was destroyed" not in str(e):
+            raise
+        page.wait_for_timeout(2500)
+        return extract_jobs_from_page(page, base_url)
 
 
 def make_job(title, context, link):
@@ -459,7 +473,7 @@ def scrape_site(page, site):
         nonlocal visited
         safe_goto(page, url, wait)
         visited += 1
-        new_jobs, hrefs = extract_jobs_from_page(page, url)
+        new_jobs, hrefs = extract_with_retry(page, url)
         fresh = hrefs - seen_hrefs
         seen_hrefs.update(hrefs)
         return new_jobs, len(fresh)
@@ -475,7 +489,7 @@ def scrape_site(page, site):
             for url in site["urls"]:
                 safe_goto(page, url, wait)
                 click_load_more(page, site["loadmore_text"], LOAD_MORE_CLICKS)
-                new, _ = extract_jobs_from_page(page, url)
+                new, _ = extract_with_retry(page, url)
                 jobs += new
                 visited += 1
         elif site["kind"] == "search":
@@ -839,11 +853,20 @@ def main():
         for api_name, fetcher in API_SOURCES:
             print(f"[{api_name}] querying API ...")
             api_jobs, api_status = fetcher()
+            filtered = []
             for j in api_jobs:
+                tl = j["title"].lower()
+                if re.search(r"\d+\s+open positions|^sales\s*\(\d+\)", tl):
+                    continue   # category rows, not jobs
+                if not (any(k in tl for k in ROLE_KEYWORDS)
+                        or j["fit_score"] >= 30):
+                    continue   # API returned an unrelated role
                 j["board"] = api_name
                 j["enriched"] = "yes"  # APIs already include descriptions
-            log.append(f"[{api_name}] {api_status}")
-            all_jobs.extend(api_jobs)
+                filtered.append(j)
+            log.append(f"[{api_name}] {api_status} "
+                       f"-> {len(filtered)} after role filter")
+            all_jobs.extend(filtered)
 
         candidates = dedupe([j for j in all_jobs if passes(j)])
         order = sorted(candidates,
