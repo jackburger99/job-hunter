@@ -1,6 +1,13 @@
 """
-Job Hunter v8 — GitHub Actions edition with NEW-posting tracking
-================================================================
+Job Hunter v9 — email alerts, Adzuna API, expanded sources
+==========================================================
+Changes from v8:
+- Writes docs/email_body.html (NEW postings only) and .new_count for the
+  GitHub Actions email step.
+- Adzuna API integration (mainstream job aggregator: set ADZUNA_APP_ID and
+  ADZUNA_APP_KEY as repo secrets; skipped silently if absent).
+- New sources: YiddishJobs, Parnassa Exchange, Joel Paul Group.
+- Macher upgraded from homepage to /all (full 2,000+ listing search page).
 Changes from v7:
 - Remembers every job link it has ever shown in seen_links.json.
   Jobs not in that file get a NEW badge and sort to the top.
@@ -29,6 +36,8 @@ import csv
 import html
 import json
 import os
+import urllib.request
+import urllib.parse
 from datetime import datetime
 from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright
@@ -144,7 +153,13 @@ SITES = [
     {"name": "jewishjobs", "kind": "urls",
      "urls": ["https://www.jewishjobs.com/search"], "extra_wait": 5000},
     {"name": "macherusa", "kind": "urls",
-     "urls": ["https://macherusa.com/"]},
+     "urls": ["https://macherusa.com/all"], "extra_wait": 4000},
+    {"name": "yiddishjobs", "kind": "urls",
+     "urls": ["https://yiddishjobs.com/"], "extra_wait": 5000},
+    {"name": "parnassa", "kind": "urls",
+     "urls": ["https://parnassaexchange.com/"], "extra_wait": 4000},
+    {"name": "joelpaul", "kind": "urls",
+     "urls": ["https://www.joelpaul.com/jobs/"], "extra_wait": 4000},
     {"name": "jpro", "kind": "search",
      "url": "https://jobs.jpro.org/jobs",
      "queries": ["sales", "business development", "client success"],
@@ -536,6 +551,47 @@ def enrich(page, job):
     return job
 
 
+
+# ============================================================
+# ADZUNA API (mainstream aggregator; needs free API keys)
+# ============================================================
+
+ADZUNA_QUERIES = ["sales manager", "business development",
+                  "account executive", "client success manager"]
+
+def fetch_adzuna():
+    app_id = os.environ.get("ADZUNA_APP_ID", "")
+    app_key = os.environ.get("ADZUNA_APP_KEY", "")
+    if not app_id or not app_key:
+        return [], "SKIPPED (no ADZUNA_APP_ID/ADZUNA_APP_KEY set)"
+    jobs = []
+    for what in ADZUNA_QUERIES:
+        url = ("https://api.adzuna.com/v1/api/jobs/us/search/1"
+               f"?app_id={app_id}&app_key={app_key}"
+               "&results_per_page=50&distance=40&salary_min=130000"
+               "&where=Edison%2C%20New%20Jersey"
+               f"&what={urllib.parse.quote(what)}")
+        try:
+            with urllib.request.urlopen(url, timeout=30) as r:
+                data = json.load(r)
+        except Exception as e:
+            return jobs, f"PARTIAL: {e}"
+        for res in data.get("results", []):
+            title = clean_title(res.get("title", ""))
+            if not title:
+                continue
+            area = res.get("location", {}).get("area", [])
+            loc = ", ".join(area[-2:]) if area else ""
+            desc = res.get("description", "")
+            j = make_job(title, f"{title} {loc} {desc}",
+                         res.get("redirect_url", ""))
+            sal = res.get("salary_max") or res.get("salary_min")
+            if sal:
+                j["salary"] = int(sal)
+            jobs.append(j)
+    return jobs, f"OK ({len(jobs)} API results)"
+
+
 def passes(j):
     if j["commute_min"] is not None and j["commute_min"] > MAX_COMMUTE_MIN:
         return False
@@ -562,8 +618,7 @@ def write_html(jobs, path, stamp):
     def esc(s):
         return html.escape(str(s or ""))
 
-    cards = []
-    for j in jobs:
+    def card_html(j):
         new_badge = '<span class="new">NEW</span> ' if j.get("is_new") else ""
         sal = f"${j['salary']:,}" if j["salary"] else "Salary not listed"
         commute = ("Remote" if j["city"] == "Remote" else
@@ -571,18 +626,32 @@ def write_html(jobs, path, stamp):
                    if j["commute_min"] is not None else j["city"])
         badge = ("high" if j["fit_score"] >= 60 else
                  "mid" if j["fit_score"] >= 35 else "low")
-        cards.append(f"""
+        added = j.get("date_added", "")
+        return f"""
     <a class="card" href="{esc(j['link'])}" target="_blank">
       <div class="row">
         <span class="fit {badge}">{j['fit_score']}</span>
         <div class="body">
           <div class="title">{new_badge}{esc(j['title'])}</div>
           <div class="meta">{esc(sal)} &nbsp;·&nbsp; {esc(commute)}
-            &nbsp;·&nbsp; <span class="board">{esc(j['board'])}</span></div>
+            &nbsp;·&nbsp; <span class="board">{esc(j['board'])}</span>
+            &nbsp;·&nbsp; added {esc(added)}</div>
           <div class="why">{esc(j['why_fit'])}</div>
         </div>
       </div>
-    </a>""")
+    </a>"""
+
+    new_jobs = [j for j in jobs if j.get("is_new")]
+    old_jobs = [j for j in jobs if not j.get("is_new")]
+    sections = []
+    if new_jobs:
+        sections.append(f'<h2 class="sect">🆕 New today ({len(new_jobs)})</h2>'
+                        + "".join(card_html(j) for j in new_jobs))
+    label = "Earlier postings" if new_jobs else "All postings"
+    if old_jobs:
+        sections.append(f'<h2 class="sect">{label} ({len(old_jobs)})</h2>'
+                        + "".join(card_html(j) for j in old_jobs))
+    cards = sections
 
     doc = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -616,6 +685,7 @@ def write_html(jobs, path, stamp):
   .board {{ text-transform: capitalize; }}
   .why {{ font-size: 13px; color: #6e6e73; margin-top: 6px;
          line-height: 1.35; }}
+  .sect {{ font-size: 17px; margin: 22px 4px 6px; }}
   .new {{ background: #ff3b30; color: #fff; font-size: 11px;
          font-weight: 700; padding: 2px 6px; border-radius: 6px;
          vertical-align: 2px; }}
@@ -652,6 +722,13 @@ def main():
             log.append(f"[{site['name']}] {status}")
             all_jobs.extend(jobs)
 
+        az_jobs, az_status = fetch_adzuna()
+        for j in az_jobs:
+            j["board"] = "adzuna"
+            j["enriched"] = "yes"   # API already gives salary + description
+        log.append(f"[adzuna] {az_status}")
+        all_jobs.extend(az_jobs)
+
         candidates = dedupe([j for j in all_jobs if passes(j)])
         order = sorted(candidates,
                        key=lambda j: (j["salary"] is not None,
@@ -668,22 +745,31 @@ def main():
 
     kept = [j for j in candidates if passes(j)]
 
-    # ---- NEW-posting tracking ----
-    seen = set()
+    # ---- NEW-posting tracking with first-seen dates ----
+    today = datetime.now().strftime("%Y-%m-%d")
+    seen = {}
     if os.path.exists(SEEN_FILE):
         try:
-            seen = set(json.load(open(SEEN_FILE)))
+            raw = json.load(open(SEEN_FILE))
+            if isinstance(raw, list):      # migrate old list format
+                seen = {link: today for link in raw}
+            else:
+                seen = raw
         except Exception:
-            seen = set()
+            seen = {}
     first_run = not seen
     for j in kept:
-        j["is_new"] = (not first_run) and (j["link"].rstrip("/") not in seen)
-    seen.update(j["link"].rstrip("/") for j in kept)
+        key = j["link"].rstrip("/")
+        j["is_new"] = (not first_run) and (key not in seen)
+        j["date_added"] = seen.get(key, today)
+    for j in kept:
+        seen.setdefault(j["link"].rstrip("/"), today)
     with open(SEEN_FILE, "w") as f:
-        json.dump(sorted(seen), f, indent=0)
+        json.dump(seen, f, indent=0, sort_keys=True)
 
-    # NEW first, then fit, then salary
-    kept.sort(key=lambda j: (j.get("is_new", False), j["fit_score"],
+    # NEW first, then most recently added, then fit, then salary
+    kept.sort(key=lambda j: (j.get("is_new", False),
+                             j.get("date_added", ""), j["fit_score"],
                              j["salary"] or 0), reverse=True)
 
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -692,12 +778,39 @@ def main():
     html_path = os.path.join(OUT_DIR, "index.html")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=[
-            "is_new", "fit_score", "title", "salary", "city", "commute_min",
-            "why_fit", "enriched", "board", "link"])
+            "is_new", "date_added", "fit_score", "title", "salary", "city",
+            "commute_min", "why_fit", "enriched", "board", "link"])
         w.writeheader()
         for j in kept:
             w.writerow({k: j.get(k, "") for k in w.fieldnames})
     write_html(kept, html_path, stamp)
+
+    # ---- email body (NEW postings only) + count for the workflow ----
+    new_jobs = [j for j in kept if j.get("is_new")]
+    rows = []
+    for j in new_jobs[:25]:
+        sal = f"${j['salary']:,}" if j["salary"] else "salary not listed"
+        loc = (j["city"] if j["commute_min"] is None
+               else f"{j['city']} (~{j['commute_min']} min transit)")
+        rows.append(
+            f'<p style="margin:0 0 14px">'
+            f'<a href="{html.escape(j["link"])}" '
+            f'style="font-size:16px;font-weight:600">'
+            f'{html.escape(j["title"])}</a><br>'
+            f'<span style="color:#555">[fit {j["fit_score"]}] {sal} · '
+            f'{html.escape(loc)} · {html.escape(j["board"])}</span><br>'
+            f'<span style="color:#777;font-size:13px">'
+            f'{html.escape(j["why_fit"])}</span></p>')
+    email_html = ("<h2>%d new job posting%s today</h2>%s"
+                  "<p><a href='https://JACKS-GITHUB-USERNAME.github.io/"
+                  "job-hunter/'>Open the full report</a></p>"
+                  % (len(new_jobs), "s" if len(new_jobs) != 1 else "",
+                     "".join(rows)))
+    with open(os.path.join(OUT_DIR, "email_body.html"), "w",
+              encoding="utf-8") as f:
+        f.write(email_html)
+    with open(".new_count", "w") as f:
+        f.write(str(len(new_jobs)))
 
     n_new = sum(1 for j in kept if j.get("is_new"))
     print("\n--- SCRAPE LOG ---")
