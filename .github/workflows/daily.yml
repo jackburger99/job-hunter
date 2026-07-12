@@ -60,11 +60,11 @@ jobs:
         with:
           server_address: smtp.gmail.com
           server_port: 465
-          username: ${{ secrets.GMAIL_ADDRESS }}
-          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          username: ${{ secrets.MAIL_FROM }}
+          password: ${{ secrets.MAIL_PASSWORD }}
           subject: "🆕 New Job Postings Today"
-          to: jackburge99@gmail.com
-          from: ${{ secrets.GMAIL_ADDRESS }}
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.MAIL_FROM }}
           html_body: ${{ steps.email_body.outputs.body }}
 
       - name: Commit results
