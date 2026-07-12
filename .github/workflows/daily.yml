@@ -34,6 +34,39 @@ jobs:
       - name: Run job scraper
         run: python main.py
 
+      - name: Read email body
+        id: email_body
+        run: |
+          if [ -f docs/email_body.html ]; then
+            echo "body=$(cat docs/email_body.html)" >> $GITHUB_OUTPUT
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Read new jobs count
+        id: new_count
+        run: |
+          if [ -f .new_count ]; then
+            COUNT=$(cat .new_count)
+            echo "count=$COUNT" >> $GITHUB_OUTPUT
+          else
+            echo "count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send new jobs email
+        if: steps.new_count.outputs.count != '0'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.GMAIL_ADDRESS }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "🆕 New Job Postings Today"
+          to: jackburge99@gmail.com
+          from: ${{ secrets.GMAIL_ADDRESS }}
+          html_body: ${{ steps.email_body.outputs.body }}
+
       - name: Commit results
         run: |
           git config user.name "job-bot"
