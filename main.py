@@ -41,7 +41,7 @@ import json
 import os
 import urllib.request
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright
 
@@ -99,6 +99,11 @@ WIDGET_MARKERS = [
     "search by keywords", "choose a category", "minimum salary",
     "any category", "any location", "any salary", "filter by",
     "sort by", "choose type of role", "choose country", "active filters",
+]
+EXPIRED_MARKERS = [
+    "job has been expired", "no longer available", "job expired",
+    "position has been filled", "this position is closed",
+    "posting has expired",
 ]
 EXEC_TITLE_MARKERS = ["vice president", "vp ", "vp,", "vp-", "svp", "evp",
                       "chief ", "cro,", "president"]
@@ -329,15 +334,19 @@ def clean_title(t):
 
 def strip_widget_lines(text):
     """Remove sidebar/filter lines from a detail page before parsing."""
-    keep = []
+    keep, prev = [], ""
     for line in text.split("\n"):
         low = line.lower()
         if any(m in low for m in WIDGET_MARKERS):
             continue
-        if re.match(r"^\s*\$\d{2,3}[,.]?\d{0,3}\s*[-–]\s*\$\d{2,3}", low) \
-                and len(line) < 30:
-            continue  # dropdown salary-range option rows
+        if (re.match(r"^\s*\$\d{2,3}[,.]?\d{0,3}\s*[-–]\s*\$\d{2,3}", low)
+                and len(line) < 30
+                and not any(k in prev for k in
+                            ("salary", "compensation", "pay"))):
+            continue  # dropdown option rows — but keep real salary lines
         keep.append(line)
+        if line.strip():
+            prev = low
         if any(x in low for x in ("related jobs", "similar jobs",
                                   "more jobs", "other openings")):
             break
@@ -374,6 +383,8 @@ def make_job(title, context, link):
     city, mins = extract_location(title, context)
     return {
         "title": title,
+        "company": "",
+        "contact": "",
         "salary": parse_salary(context),
         "city": city,
         "commute_min": mins,
@@ -555,6 +566,11 @@ def enrich(page, job):
         body = strip_widget_lines(body)[:4000]
     except Exception:
         return job
+    low = body.lower()
+    if any(m in low for m in EXPIRED_MARKERS):
+        job["expired"] = True
+        return job
+
     sal = parse_salary(body)
     if sal:
         job["salary"] = sal
@@ -564,6 +580,18 @@ def enrich(page, job):
     score, why = fit_details(job["title"], body)
     if score > job["fit_score"]:
         job["fit_score"], job["why_fit"] = score, why
+
+    # contact info: visible emails, phones, explicit company lines
+    emails = sorted(set(re.findall(
+        r"[\w.+-]+@[\w-]+\.[\w.-]{2,}", body)))[:2]
+    phones = sorted(set(re.findall(
+        r"\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}", body)))[:2]
+    job["contact"] = "  ".join(emails + phones)
+    m = re.search(r"(?:company|employer|organization)\s*[:\-]\s*"
+                  r"([A-Z][^\n]{2,50})", body)
+    if m:
+        job["company"] = m.group(1).strip()
+
     job["enriched"] = "yes"
     return job
 
@@ -699,10 +727,13 @@ def fetch_jooble():
     try:
         for what in ("sales manager", "business development",
                      "account executive"):
+            since = (datetime.now() - timedelta(days=10)
+                     ).strftime("%Y-%m-%d")
             data = _http_json(
                 "https://jooble.org/api/" + key,
                 data={"keywords": what, "location": "Edison, NJ",
-                      "salary": "130000", "page": "1"})
+                      "salary": "130000", "page": "1",
+                      "datecreatedfrom": since})
             for res in data.get("jobs", []):
                 title = clean_title(res.get("title", ""))
                 snippet = re.sub(r"<[^>]+>", " ",
@@ -755,8 +786,17 @@ def write_html(jobs, path, stamp):
         badge = ("high" if j["fit_score"] >= 60 else
                  "mid" if j["fit_score"] >= 35 else "low")
         added = j.get("date_added", "")
+        extra = ""
+        if j.get("company"):
+            extra += f'<div class="meta">🏢 {esc(j["company"])}</div>'
+        if j.get("contact"):
+            extra += f'<div class="meta">📇 {esc(j["contact"])}</div>'
         return f"""
-    <a class="card" href="{esc(j['link'])}" target="_blank">
+    <a class="card" href="{esc(j['link'])}" target="_blank"
+       data-fit="{j['fit_score']}" data-salary="{j['salary'] or 0}"
+       data-commute="{j['commute_min'] if j['commute_min'] is not None
+                      else 9999}"
+       data-board="{esc(j['board'])}" data-date="{esc(added)}">
       <div class="row">
         <span class="fit {badge}">{j['fit_score']}</span>
         <div class="body">
@@ -764,21 +804,55 @@ def write_html(jobs, path, stamp):
           <div class="meta">{esc(sal)} &nbsp;·&nbsp; {esc(commute)}
             &nbsp;·&nbsp; <span class="board">{esc(j['board'])}</span>
             &nbsp;·&nbsp; added {esc(added)}</div>
+          {extra}
           <div class="why">{esc(j['why_fit'])}</div>
         </div>
       </div>
     </a>"""
 
+    sortbar = """
+  <div class="sortbar">
+    <span>Sort:</span>
+    <button onclick="srt('fit',-1)" class="on" id="b-fit">Fit</button>
+    <button onclick="srt('salary',-1)" id="b-salary">Salary</button>
+    <button onclick="srt('commute',1)" id="b-commute">Commute</button>
+    <button onclick="srt('board',0)" id="b-board">Source</button>
+    <button onclick="srt('date',-2)" id="b-date">Date</button>
+  </div>
+  <script>
+  function srt(key, dir) {
+    document.querySelectorAll('.sortbar button').forEach(
+      b => b.classList.remove('on'));
+    document.getElementById('b-' + key).classList.add('on');
+    document.querySelectorAll('.cards').forEach(c => {
+      const cards = Array.from(c.children);
+      cards.sort((a, b) => {
+        if (dir === 0)
+          return a.dataset[key].localeCompare(b.dataset[key]);
+        if (dir === -2)
+          return b.dataset[key].localeCompare(a.dataset[key]);
+        return dir * (parseFloat(a.dataset[key]) -
+                      parseFloat(b.dataset[key]));
+      });
+      cards.forEach(el => c.appendChild(el));
+    });
+  }
+  </script>"""
+
     new_jobs = [j for j in jobs if j.get("is_new")]
     old_jobs = [j for j in jobs if not j.get("is_new")]
-    sections = []
+    sections = [sortbar]
     if new_jobs:
-        sections.append(f'<h2 class="sect">🆕 New today ({len(new_jobs)})</h2>'
-                        + "".join(card_html(j) for j in new_jobs))
+        sections.append(
+            f'<h2 class="sect">🆕 New today ({len(new_jobs)})</h2>'
+            f'<div class="cards">'
+            + "".join(card_html(j) for j in new_jobs) + "</div>")
     label = "Earlier postings" if new_jobs else "All postings"
     if old_jobs:
-        sections.append(f'<h2 class="sect">{label} ({len(old_jobs)})</h2>'
-                        + "".join(card_html(j) for j in old_jobs))
+        sections.append(
+            f'<h2 class="sect">{label} ({len(old_jobs)})</h2>'
+            f'<div class="cards">'
+            + "".join(card_html(j) for j in old_jobs) + "</div>")
     cards = sections
 
     doc = f"""<!DOCTYPE html>
@@ -814,6 +888,13 @@ def write_html(jobs, path, stamp):
   .why {{ font-size: 13px; color: #6e6e73; margin-top: 6px;
          line-height: 1.35; }}
   .sect {{ font-size: 17px; margin: 22px 4px 6px; }}
+  .sortbar {{ display: flex; gap: 8px; align-items: center;
+             padding: 4px; font-size: 14px; flex-wrap: wrap; }}
+  .sortbar button {{ border: 1px solid #c7c7cc; background: transparent;
+             color: inherit; border-radius: 14px; padding: 5px 12px;
+             font-size: 14px; }}
+  .sortbar button.on {{ background: #007aff; color: #fff;
+             border-color: #007aff; }}
   .new {{ background: #ff3b30; color: #fff; font-size: 11px;
          font-weight: 700; padding: 2px 6px; border-radius: 6px;
          vertical-align: 2px; }}
@@ -862,7 +943,8 @@ def main():
                         or j["fit_score"] >= 30):
                     continue   # API returned an unrelated role
                 j["board"] = api_name
-                j["enriched"] = "yes"  # APIs already include descriptions
+                # jooble links can be dead redirects -> verify via enrichment
+                j["enriched"] = "no" if api_name == "jooble" else "yes"
                 filtered.append(j)
             log.append(f"[{api_name}] {api_status} "
                        f"-> {len(filtered)} after role filter")
@@ -882,7 +964,8 @@ def main():
         ctx.close()
         browser.close()
 
-    kept = [j for j in candidates if passes(j)]
+    kept = [j for j in candidates
+            if passes(j) and not j.get("expired")]
 
     # ---- NEW-posting tracking with first-seen dates ----
     today = datetime.now().strftime("%Y-%m-%d")
@@ -917,8 +1000,9 @@ def main():
     html_path = os.path.join(OUT_DIR, "index.html")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=[
-            "is_new", "date_added", "fit_score", "title", "salary", "city",
-            "commute_min", "why_fit", "enriched", "board", "link"])
+            "is_new", "date_added", "fit_score", "title", "company",
+            "contact", "salary", "city", "commute_min", "why_fit",
+            "enriched", "board", "link"])
         w.writeheader()
         for j in kept:
             w.writerow({k: j.get(k, "") for k in w.fieldnames})
