@@ -108,40 +108,98 @@ EXPIRED_MARKERS = [
 EXEC_TITLE_MARKERS = ["vice president", "vp ", "vp,", "vp-", "svp", "evp",
                       "chief ", "cro,", "president"]
 
-RESUME_MAP = {
-    "b2b": (3, "B2B client experience (Star Communications)"),
-    "telecom": (3, "telecom/IT background (Star Communications)"),
-    "it services": (2, "IT infrastructure support experience"),
-    "saas": (2, "tech/software familiarity + AI interest"),
-    "automotive": (3, "automotive sales (Mercedes-Benz)"),
-    "dealership": (2, "dealership sales experience (Mercedes-Benz)"),
-    "luxury": (3, "luxury client services (Feldmar Watch Co.)"),
-    "watch": (2, "watch industry experience (Feldmar)"),
-    "electronics": (2, "consumer electronics sales (Video & Audio Center)"),
-    "home automation": (2, "sold home automation systems"),
-    "operations": (2, "ran high-volume service ops (200 units/mo, 7 techs)"),
-    "manager": (2, "management experience (Feldmar service center)"),
-    "director": (2, "leadership/ops management background"),
-    "ai": (2, "strong AI/automation interest, built AI tools"),
-    "automation": (2, "workflow automation interest and hands-on projects"),
-    "prospecting": (2, "outbound prospecting & lead gen (Mercedes-Benz)"),
-    "lead generation": (2, "multi-channel lead nurturing experience"),
-    "upsell": (2, "proven upselling (home theater installs)"),
-    "negotiation": (2, "sales negotiation experience"),
-    "de-escalation": (2, "client de-escalation skills (Feldmar)"),
-    "outside sales": (2, "in-person consultative sales background"),
-    "inside sales": (2, "phone/email/in-person sales channels"),
-    "account": (3, "account/client relationship management"),
-    "client": (2, "5+ yrs customer-facing client relations"),
-    "customer": (2, "customer needs assessment & service ops"),
-    "relationship": (2, "relationship-building track record"),
-    "success": (2, "client satisfaction focus (Star Communications)"),
-    "business development": (3, "pipeline building & new business generation"),
-    "sales": (3, "5+ yrs sales across four industries"),
-    "development": (1, "relationship cultivation background"),
-    "donor": (1, "high-touch client relations transferable to donors"),
-    "fundraising": (1, "relationship sales transferable to fundraising"),
+# ============================================================
+# FIT MODEL v2 — scores how strong a CANDIDATE Jack's resume is
+# for the job, not how many buzzwords overlap.
+#   base:   role level from the title (is this a 5-yrs-exp role?)
+#   plus:   industries his resume actually covers
+#   minus:  specialized industries expecting their own experience
+#   minus:  hard requirements (8+ yrs, licenses)
+# ============================================================
+
+ROLE_TIERS = [  # checked top-down; first match wins
+    (10, "executive-level (likely 10+ yrs leadership)", [
+        "vice president", "vp ", "vp,", "vp-", "svp", "evp", "chief",
+        "president", "cro"]),
+    (25, "director-level (a stretch at 5 yrs experience)", [
+        "director of sales", "sales director", "director of business",
+        "business development director", "director of development",
+        "head of", "director of client", "director of customer",
+        "senior director"]),
+    (40, None, [
+        "sales manager", "business development manager",
+        "territory manager", "partnerships manager",
+        "client success manager", "customer success manager",
+        "account supervisor"]),
+    (50, None, [
+        "account executive", "account manager", "sales representative",
+        "sales rep", "salesperson", "salesman", "saleslady",
+        "inside sales", "outside sales", "sales consultant",
+        "sales associate", "sales specialist", "sales producer",
+        "business development rep", "bdr", "sdr", "client success",
+        "customer success", "client relations", "customer relations",
+        "relationship manager", "client services", "sales agent",
+        "account rep"]),
+]
+
+DOMAIN_BONUS = {  # industries on Jack's resume -> (points, evidence)
+    "telecom": (12, "telecom/IT background (Star Communications)"),
+    "b2b": (10, "B2B client experience (Star Communications)"),
+    "saas": (8, "tech affinity + AI/automation projects"),
+    "software": (6, "tech affinity + AI/automation projects"),
+    "technology": (6, "tech affinity + AI/automation projects"),
+    "it services": (10, "IT infrastructure support experience"),
+    "electronics": (12, "consumer electronics sales (Video & Audio Center)"),
+    "audio": (8, "A/V sales experience (Video & Audio Center)"),
+    "home automation": (10, "sold home automation systems"),
+    "automotive": (12, "automotive sales (Mercedes-Benz)"),
+    "dealership": (10, "dealership sales experience (Mercedes-Benz)"),
+    "luxury": (12, "luxury client services (Feldmar Watch Co.)"),
+    "watch": (10, "watch industry experience (Feldmar)"),
+    "jewelry": (8, "luxury goods experience (Feldmar)"),
+    "retail": (6, "retail sales background"),
+    "consumer": (5, "consumer-facing sales background"),
+    "ai": (8, "strong AI/automation interest, built AI tools"),
 }
+
+SKILL_BONUS = {  # transferable skills -> small boosts
+    "prospecting": (4, "outbound prospecting (Mercedes-Benz)"),
+    "lead generation": (4, "multi-channel lead nurturing"),
+    "pipeline": (3, "pipeline building experience"),
+    "crm": (3, "customer relationship management"),
+    "quota": (3, "goal-oriented sales environments"),
+    "upsell": (4, "proven upselling (home theater installs)"),
+    "negotiation": (4, "sales negotiation experience"),
+    "de-escalation": (4, "client de-escalation (Feldmar)"),
+    "cold call": (4, "outbound sales experience"),
+}
+
+DOMAIN_MISMATCH = [  # specialized industries expecting their own experience
+    (["sea logistics", "logistics", "freight", "3pl", "supply chain",
+      "shipping"], 20, "logistics/freight industry experience expected"),
+    (["pharmaceutical", "pharma ", "clinical", "medical device"],
+     20, "pharma/medical industry experience expected"),
+    (["healthcare"], 12, "healthcare industry experience expected"),
+    (["insurance", "p&c"], 15, "insurance industry experience expected"),
+    (["real estate", "realty", "property management"],
+     15, "real estate experience expected"),
+    (["mortgage", "lending", "banking", "wealth management",
+      "private equity", "m&a", "investment"],
+     20, "finance industry experience expected"),
+    (["construction", "building materials", "hvac"],
+     15, "construction industry experience expected"),
+    (["industrial", "manufacturing", "machinery", "chemicals"],
+     15, "industrial sales experience expected"),
+    (["nonprofit", "donor", "fundraising"],
+     8, "nonprofit fundraising experience preferred"),
+]
+
+LICENSE_REQS = [
+    "insurance license", "licensed insurance", "p&c license",
+    "series 7", "series 63", "series 65", "real estate license",
+    "cdl", "security clearance", "professional license required",
+]
+
 RESUME_NEGATIVES = [
     "rn ", "nurse", "bcba", "physical therapist", "cpa", "accountant",
     "controller", "attorney", "lawyer", "paralegal", "engineer",
@@ -298,38 +356,92 @@ def extract_location(title, text):
 
 
 def fit_details(title, body):
-    blob = (title + " " + body).lower()
     tl = title.lower()
+    blob = (title + " " + body).lower()
     if any(neg in blob for neg in RESUME_NEGATIVES):
         return 0, ""
-    raw, reasons = 0, []
-    for kw, (w, reason) in RESUME_MAP.items():
-        if kw in blob:
-            raw += w
-            if kw in tl:
-                raw += w
-            reasons.append((w, reason))
-    score = min(100, raw * 4)
-    warn = ""
-    if any(m in tl for m in EXEC_TITLE_MARKERS):
-        score //= 2
-        warn = "⚠ Executive-level role — likely requires 10+ yrs leadership. "
-    elif "analyst" in tl and "sales" not in tl:
-        score //= 2
-        warn = "⚠ Analyst role — not client-facing sales. "
-    reasons.sort(key=lambda r: -r[0])
-    seen, why = set(), []
-    for _, r in reasons:
-        if r not in seen:
-            seen.add(r)
-            why.append(r)
-        if len(why) == 3:
+    if "analyst" in tl and "sales" not in tl:
+        return 8, "⚠ Analyst role — not client-facing sales"
+
+    strengths, warnings = [], []
+
+    # 1) base: role level
+    base, tier_warn = 20, None
+    for pts, warn, pats in ROLE_TIERS:
+        if any(p in tl for p in pats):
+            base, tier_warn = pts, warn
             break
-    return score, warn + "; ".join(why)
+    if tier_warn:
+        warnings.append(tier_warn)
+
+    # 2) domain bonuses (industries actually on the resume)
+    def kw_hit(kw, text):
+        if len(kw) <= 3:   # short keys like "ai" need word boundaries
+            return re.search(r"\b" + re.escape(kw) + r"\b", text)
+        return kw in text
+
+    dom = 0
+    for kw, (pts, why) in DOMAIN_BONUS.items():
+        if kw_hit(kw, blob) and why not in strengths:
+            dom += pts
+            strengths.append(why)
+    dom = min(dom, 30)
+
+    # 3) transferable skills
+    sk = 0
+    for kw, (pts, why) in SKILL_BONUS.items():
+        if kw in blob and why not in strengths:
+            sk += pts
+            strengths.append(why)
+    sk = min(sk, 15)
+
+    # 4) industry mismatch penalties
+    pen = 0
+    for kws, pts, warn in DOMAIN_MISMATCH:
+        if any(k in blob for k in kws):
+            pen += pts
+            warnings.append(warn)
+    pen = min(pen, 35)
+
+    # 5) hard requirements
+    yrs = [int(m) for m in re.findall(
+        r"(\d{1,2})\s*\+?\s*(?:years|yrs)", blob) if int(m) <= 30]
+    max_req = max(yrs) if yrs else 0
+    if max_req >= 8:
+        pen += 25
+        warnings.append(f"requires {max_req}+ yrs experience (resume: ~5)")
+    elif max_req >= 6:
+        pen += 12
+        warnings.append(f"asks {max_req}+ yrs experience (resume: ~5)")
+    for lic in LICENSE_REQS:
+        if lic in blob:
+            pen += 40
+            warnings.append(f"requires: {lic}")
+            break
+
+    # generic sales-fit floor: he IS a salesperson
+    if base >= 40 and not strengths:
+        strengths.append("5+ yrs sales/client-facing experience")
+
+    score = max(0, min(100, base + dom + sk - pen))
+    why = "; ".join(strengths[:3])
+    if warnings:
+        why = "⚠ " + "; ⚠ ".join(warnings[:2]) + (". " + why if why else "")
+    return score, why
 
 
 def clean_title(t):
-    return re.sub(r"\s+", " ", t).strip()[:120]
+    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s*Posted\s.+?ago\s*$", "", t, flags=re.I)
+    t = re.sub(r"\s*Apply Now\s*$", "", t, flags=re.I)
+    return t[:120]
+
+
+def canonical_key(j):
+    """Stable identity: board + normalized title. Links can't be trusted —
+    some sources (Jooble) mint a new URL for the same job every day."""
+    norm = re.sub(r"[^a-z0-9]+", " ", j["title"].lower()).strip()
+    return j.get("board", "") + "|" + norm
 
 
 def strip_widget_lines(text):
@@ -762,7 +874,7 @@ def passes(j):
 def dedupe(jobs):
     seen, out = set(), []
     for j in sorted(jobs, key=lambda x: -x["fit_score"]):
-        key = j["link"].rstrip("/")
+        key = canonical_key(j)
         if key not in seen:
             seen.add(key)
             out.append(j)
@@ -981,11 +1093,12 @@ def main():
             seen = {}
     first_run = not seen
     for j in kept:
-        key = j["link"].rstrip("/")
-        j["is_new"] = (not first_run) and (key not in seen)
-        j["date_added"] = seen.get(key, today)
+        ck, lk = canonical_key(j), j["link"].rstrip("/")
+        known = ck in seen or lk in seen
+        j["is_new"] = (not first_run) and not known
+        j["date_added"] = seen.get(ck) or seen.get(lk) or today
     for j in kept:
-        seen.setdefault(j["link"].rstrip("/"), today)
+        seen.setdefault(canonical_key(j), today)
     with open(SEEN_FILE, "w") as f:
         json.dump(seen, f, indent=0, sort_keys=True)
 
@@ -1025,7 +1138,7 @@ def main():
             f'<span style="color:#777;font-size:13px">'
             f'{html.escape(j["why_fit"])}</span></p>')
     email_html = ("<h2>%d new job posting%s today</h2>%s"
-                  "<p><a href='https://JACKS-GITHUB-USERNAME.github.io/"
+                  "<p><a href='https://jackburger99.github.io/"
                   "job-hunter/'>Open the full report</a></p>"
                   % (len(new_jobs), "s" if len(new_jobs) != 1 else "",
                      "".join(rows)))
